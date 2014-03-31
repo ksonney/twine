@@ -1,4 +1,4 @@
-import os, imp
+import os, imp, re, tweeregex
 from collections import OrderedDict
 from random import shuffle
 
@@ -30,12 +30,19 @@ class Header(object):
     def storySettings(self):
         """Returns a list of StorySettings dictionaries."""
 
-        # Randomise the obfuscate key
-        obfuscatekey = list('anbocpdqerfsgthuivjwkxlymz')
-        shuffle(obfuscatekey)
-        obfuscatekey = ''.join(obfuscatekey)
-
         return [{
+                "type": "text",
+                "name": "identity",
+                "label": "What your work identifies as:",
+                "desc": "Is it a game, a story, a poem, or something else?\n(This is used for dialogs and error messages only.)",
+                "default": "game"
+            },{
+                "type": "text",
+                "name": "description",
+                "label": "A short description of your work:",
+                "desc": "This is inserted in the HTML file's <meta> description tag, used by\nsearch engines and other automated tools.",
+                "default": ""
+            },{
                 "type": "checkbox",
                 "name": "undo",
                 "label": "Let the player undo moves",
@@ -56,38 +63,49 @@ class Header(object):
             },{
                 "type": "checkbox",
                 "name": "obfuscate",
-                "label": "Obfuscate the HTML source to obscure spoilers",
-                "values": ("swap","off")
-            },{
-                "type": "text",
-                "name": "obfuscatekey",
-                "label": "Obfuscation key:",
-                "default": obfuscatekey
-            },{
-                "type": "text",
-                "name": "identity",
-                "label": "What your work identifies as:",
-                "desc": "Is it a game, a story, a poem, or something else?\n(This is used for dialogs and error messages only.)",
-                "default": "game"
+                "label": "Use ROT13 to obscure spoilers in the HTML source code?",
+                "values": ("rot13", "off"),
+                "default": "off"
             },{
                 "type": "checkbox",
                 "name": "jquery",
                 "label": "Include the jQuery script library?",
-                "desc": "Individual scripts may force this on by containing the text 'requires jQuery'.",
+                "desc": "This enables the jQuery() function and the $() shorthand.\nIndividual scripts may force this on by containing the text 'requires jQuery'.",
             },{
                 "type": "checkbox",
                 "name": "modernizr",
                 "label": "Include the Modernizr script library?",
-                "desc": "Individual scripts/stylesheets may force this on by containing the\ntext 'requires Modernizr'.",
+                "desc": "This adds CSS classes to the <html> element that can be used to write\nmore compatible CSS or scripts. See http://modernizr.com/docs for details.\nIndividual scripts/stylesheets may force this on by containing the\ntext 'requires Modernizr'.",
             }]
 
-    def is_endtag(self, name, tag):
+    def isEndTag(self, name, tag):
         """Return true if the name is equal to an endtag."""
         return (name == ('end' + tag))
 
-    def nested_macros(self):
+    def nestedMacros(self):
         """Returns a list of macro names that support nesting."""
         return ['if', 'silently', 'nobr']
+    
+    def passageChecks(self):
+        """
+        Returns a list of checks to perform on the passage whenever it's closed.
+        Each function should return a string warning message, or None
+        """
+        def checkIfMacro(passage):
+            # Check that the single = assignment isn't present in an if/elseif condition.
+            ifMacroRegex = tweeregex.MACRO_REGEX.replace(r"([^>\s]+)", r"(if\b|else ?if\b)")
+            iter = re.finditer(ifMacroRegex, passage.text)
+            for i in iter:
+                if re.search(r"[^=<>!~]=(?!=)" + tweeregex.UNQUOTED_REGEX, i.group(2)):
+                    return i.group(0) + " contains the = operator.\nPlease use 'is' instead of '=' in <<if>> and <<else>> tags."
+        
+        def checkScriptTagInScriptPassage(passage):
+            # Check that s script passage does not contain "<script type='text/javascript>" style tags.
+            if passage.isScript():
+                if re.search(r"(?:</?script\b(?:[^>]|>" + tweeregex.QUOTED_REGEX + ")*>)" + tweeregex.UNQUOTED_REGEX, passage.text):
+                    return "This script contains a HTML <script> tag.\nScript passages should only contain Javascript code, not raw HTML."
+        
+        return [checkIfMacro, checkScriptTagInScriptPassage]
 
     @staticmethod
     def factory(type, path, builtinPath):
