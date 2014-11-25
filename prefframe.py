@@ -15,7 +15,7 @@ class PreferenceFrame(wx.Frame):
         panel = wx.Panel(parent = self, id = wx.ID_ANY)
         borderSizer = wx.BoxSizer(wx.VERTICAL)
         panel.SetSizer(borderSizer)
-        panelSizer = wx.FlexGridSizer(13, 2, metrics.size('relatedControls'), metrics.size('relatedControls'))
+        panelSizer = wx.FlexGridSizer(14, 2, metrics.size('relatedControls'), metrics.size('relatedControls'))
         borderSizer.Add(panelSizer, flag = wx.ALL, border = metrics.size('windowBorder'))
 
         self.editorFont = wx.FontPickerCtrl(panel, style = wx.FNTP_FONTDESC_AS_LABEL)
@@ -53,7 +53,7 @@ class PreferenceFrame(wx.Frame):
 
         fsLineHeightSizer.Add(self.fsLineHeight, flag = wx.ALIGN_CENTER_VERTICAL)
         fsLineHeightSizer.Add(wx.StaticText(fsLineHeightPanel, label = '%'), flag = wx.ALIGN_CENTER_VERTICAL)
-        
+
         def checkbox(self, name, label, panel=panel):
             setattr(self, name, wx.CheckBox(panel, label=label))
             attr = getattr(self, name)
@@ -61,10 +61,11 @@ class PreferenceFrame(wx.Frame):
             attr.SetValue(self.app.config.ReadBool(name))
 
         checkbox(self, "fastStoryPanel", 'Faster but rougher story map display')
+        checkbox(self, "flatDesign", 'Flat Design(TM) mode')
         checkbox(self, "imageArrows", 'Connector arrows for images and stylesheets')
         checkbox(self, "displayArrows", 'Connector arrows for <<display>>ed passages')
         checkbox(self, "createPassagePrompt", 'Offer to create new passages for broken links')
-        checkbox(self, "importImagePrompt", 'Offer to import externally linked images')  
+        checkbox(self, "importImagePrompt", 'Offer to import externally linked images')
         checkbox(self, "passageWarnings", 'Warn about possible passage code errors')
 
         panelSizer.Add(wx.StaticText(panel, label = 'Normal Font'), flag = wx.ALIGN_CENTER_VERTICAL)
@@ -80,20 +81,22 @@ class PreferenceFrame(wx.Frame):
         panelSizer.Add(self.fsBgColor)
         panelSizer.Add(wx.StaticText(panel, label = 'Fullscreen Editor Line Spacing'), flag = wx.ALIGN_CENTER_VERTICAL)
         panelSizer.Add(fsLineHeightPanel, flag = wx.ALIGN_CENTER_VERTICAL)
-        panelSizer.Add(self.fastStoryPanel)
+        panelSizer.Add(self.fastStoryPanel) # pylint: disable=no-member
         panelSizer.Add((1,2))
-        panelSizer.Add(self.imageArrows)
+        panelSizer.Add(self.flatDesign) # pylint: disable=no-member
         panelSizer.Add((1,2))
-        panelSizer.Add(self.displayArrows)
+        panelSizer.Add(self.imageArrows) # pylint: disable=no-member
+        panelSizer.Add((1,2))
+        panelSizer.Add(self.displayArrows) # pylint: disable=no-member
         panelSizer.Add((1,2))
         panelSizer.Add(wx.StaticText(panel, label = 'When closing a passage:'), flag = wx.ALIGN_CENTER_VERTICAL)
         panelSizer.Add((1,2))
-        panelSizer.Add(self.createPassagePrompt)
+        panelSizer.Add(self.createPassagePrompt) # pylint: disable=no-member
         panelSizer.Add((1,2))
-        panelSizer.Add(self.importImagePrompt)
+        panelSizer.Add(self.importImagePrompt) # pylint: disable=no-member
         panelSizer.Add((1,2))
-        panelSizer.Add(self.passageWarnings)
-        
+        panelSizer.Add(self.passageWarnings) # pylint: disable=no-member
+
         panelSizer.Fit(self)
         borderSizer.Fit(self)
         self.SetIcon(self.app.icon)

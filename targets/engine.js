@@ -5,22 +5,61 @@
 */
 
 function clone(a) {
-    var b = {};
+    var constructor, b, proto;
+    // Primitive types and functions are flat-out passed by value.
     if (!a || typeof a != "object") {
         return a;
     }
+    constructor = a.constructor;
+    if (constructor == Date || constructor == RegExp) {
+        b = new constructor(a);
+    }
+    else if (constructor == Array) {
+        b = [];
+    }
+    else if (a.nodeType && typeof a.cloneNode == "function") {
+        b = a.cloneNode(true);
+    }
+    else {
+        proto = (typeof Object.getPrototypeOf == "function" ? Object.getPrototypeOf(a) : a.__proto__);
+        b = proto ? Object.create(proto) : {};
+    }
+    // This should work on both arrays and objects equally -
+    // even copying expando properties foolishly added to arrays.
     for (var property in a) {
-        if (typeof a[property] == "object") {
-            try {
-                b[property] = JSON.parse(JSON.stringify(a[property]));
-                continue;
+        if (Object.prototype.hasOwnProperty.call(a,property) && !isCyclic(a[property])) {
+            if (typeof a[property] == "object") {
+                try {
+                    b[property] = clone(a[property]);
+                    continue;
+                }
+                catch(e) {}
             }
-            catch(e) {}
+            b[property] = a[property];
         }
-        b[property] = a[property];
     }
     return b;
 }
+
+function isCyclic(obj) {
+    var properties = [];
+    return (function recurse(obj) {
+        var key, i, ownProps = [];
+        if (obj && typeof obj == "object") {
+            if (properties.indexOf(obj) > -1) {
+                return true;
+            }
+            properties.push(obj);
+            for (key in obj) {
+                if (Object.prototype.hasOwnProperty.call(obj,key) && recurse(obj[key])) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }(obj));
+}
+
 function insertElement(a, d, f, c, e) {
     var b = document.createElement(d);
     if (f) {
@@ -36,6 +75,14 @@ function insertElement(a, d, f, c, e) {
         a.appendChild(b)
     }
     return b
+}
+
+function addClickHandler(el, fn) {
+    if (el.addEventListener) {
+        el.addEventListener('click', fn); 
+    } else if (el.attachEvent)  {
+        el.attachEvent('onclick', fn);
+    }
 }
 
 function insertText(a, b) {
@@ -118,12 +165,77 @@ function scrollWindowTo(e, margin) {
     }
 }
 
+// Returns an object containing the properties in neu which differ from old.
 function delta(old,neu) {
     var vars, ret = {};
     if (old && neu) {
         for (vars in neu) {
             if (neu[vars] !== old[vars]) {
                 ret[vars] = neu[vars];
+            }
+        }
+    }
+    return ret;
+}
+
+// Convert various exotic objects into JSON-serialisable plain objects.
+function decompile(val) {
+    var i, ret;
+    if ((typeof val != "object" && typeof val != "function") || !val) {
+        return val;
+    }
+    // Passage objects: store only their name
+    else if (val instanceof Passage) {
+        return { "[[Passage]]" : val.id };
+    }
+    else if (Array.isArray(val)) {
+        ret = [];
+    }
+    else {
+        ret = {};
+    }
+    // Deep-copy own properties
+    for (i in val) {
+        if (Object.prototype.hasOwnProperty.call(val,i) && !isCyclic(val[i])) {
+            ret[i] = decompile(val[i]);
+        }
+    }
+    // Functions: store the decompiled function body as a property
+    // arbitrarily called "[[Call]]".
+    if (typeof val == "function" || val instanceof RegExp) {
+        try {
+            // Check if it can be recompiled (i.e. isn't a bound or native)
+            internalEval(val+"");
+            ret["[[Call]]"] = val+"";
+        } catch(e) {
+            // Silently fail
+            ret["[[Call]]"] = "function(){}"
+        }
+    }
+    return ret;
+}
+
+// Reverses the effects of decompile()
+// Takes recently JSON.parse()d objects and makes them exotic again.
+function recompile(val) {
+    var i, ret = val;
+    if (val && typeof val == "object") {
+        // Passages
+        if (typeof val["[[Passage]]"] == "number") {
+            return tale.get(val["[[Passage]]"]);
+        }
+        // Functions/RegExps
+        if (typeof val["[[Call]]"] == "string") {
+            try {
+                ret = internalEval(val["[[Call]]"]);
+            }
+            catch(e){}
+        }
+        // Recursively recompile all properties
+        // or, if a function/regexp, deep-copy them to the new function.
+        for (i in val) {
+            if (Object.prototype.hasOwnProperty.call(val,i)) {
+                ret[i] = recompile(val[i]);
             }
         }
     }
@@ -177,7 +289,7 @@ function throwError(a, b, tooltip) {
         var elem = insertElement(a, "span", null, "marked", b);
         tooltip && elem.setAttribute("title", tooltip);
     } else {
-        alert("There is a technical problem with this story: " + b + "."+softErrorMessage);
+        alert("Regrettably, this " + tale.identity() + "'s code just ran into a problem:\n" + b + ".\n"+softErrorMessage);
     }
 }
 Math.easeInOut = function (a) {
@@ -240,8 +352,19 @@ function rot13(s) {
 **
 */
 
+Object.create || (function() {
+    var F = function(){};
+    Object.create = function (o) {
+        if (typeof o != 'object') throw TypeError();
+        F.prototype = o;
+        return new F();
+    };
+})();
 String.prototype.trim || (String.prototype.trim = function () {
     return this.replace(/^\s\s*/, "").replace(/\s\s*$/, "")
+});
+Array.isArray || (Array.isArray = function(arg) {
+    return Object.prototype.toString.call(arg) === '[object Array]';
 });
 Array.prototype.indexOf || (Array.prototype.indexOf = function (b, d) {
     d = (d == null) ? 0 : d;
@@ -319,9 +442,9 @@ History.prototype.encodeHistory = function(b, noVars) {
     var ret = ".", vars, type, hist = this.history[b],
         d = this.history[b+1] ? delta(this.history[b+1].variables, hist.variables) : hist.variables;
     
-    function vtob(str) {
+    function vtob(val) {
         try {
-            return window.btoa(unescape(encodeURIComponent(JSON.stringify(str))));
+            return window.btoa(unescape(encodeURIComponent(JSON.stringify(decompile(val)))));
         } catch(e) {
             return "0";
         }
@@ -330,13 +453,13 @@ History.prototype.encodeHistory = function(b, noVars) {
     if (!hist.passage || hist.passage.id == null) {
         return ""
     }
-    ret += hist.passage.id.toString(36)
+    ret += hist.passage.id.toString(36);
     if (noVars) {
         return ret;
     }
     for (vars in d) {
         type = typeof d[vars];
-        if (type != "function" && type != "undefined") {
+        if (type != "undefined") {
             ret += "$" + vtob(vars) + "," + vtob(d[vars]);
         }
     }
@@ -350,13 +473,13 @@ History.prototype.encodeHistory = function(b, noVars) {
 };
 
 History.decodeHistory = function(str, prev) {
-    var name, splits, variable, c, d, 
+    var name, splits, variable, c, d,
         ret = { variables: clone(prev.variables) || {} },
         match = /([a-z0-9]+)((?:\$[A-Za-z0-9\+\/=]+,[A-Za-z0-9\+\/=]+)*)((?:\[[A-Za-z0-9\+\/=]+,[A-Za-z0-9\+\/=]+)*)/g.exec(str);
     
     function btov(str) {
         try {
-            return JSON.parse(decodeURIComponent(escape(window.atob(str))));
+            return recompile(JSON.parse(decodeURIComponent(escape(window.atob(str)))));
         } catch(e) {
             return 0;
         }
@@ -412,6 +535,9 @@ History.prototype.restore = function () {
     try {
         if (!window.location.hash || (window.location.hash == "#")) {
             if (testplay) {
+                if (tale.has("StoryInit")) {
+                    new Wikifier(insertElement(null, "span"), tale.get("StoryInit").text);
+                }
                 this.display(testplay, null, 'quietly');
                 return true
             }
@@ -446,19 +572,19 @@ History.prototype.restore = function () {
 };
 
 History.prototype.saveVariables = function(c, el, callback) {
+
+    if (typeof callback == "function") {
+        callback.call(el);
+    }
+
     this.history.unshift({
         passage: c,
         variables: clone(this.history[0].variables)
     });
-    // Setter links
-    if (typeof callback == "function") {
-        callback.call(el);
-        this.history[1] && (this.history[1].linkVars = delta(this.history[1].variables,this.history[0].variables));
-    }
 };
 var restart = History.prototype.restart = function () {
     if (typeof window.history.replaceState == "function") {
-        this.pushState(true, window.location.href.replace(/#.*$/,''));
+        (typeof this.pushState == "function") && this.pushState(true, window.location.href.replace(/#.*$/,''));
         window.location.reload()
     }
     else {
@@ -474,7 +600,7 @@ var restart = History.prototype.restart = function () {
 
 var version = {
     major: 4,
-    minor: 2,
+    minor: 3,
     revision: 0,
     date: new Date("2014"),
     extensions: {}
@@ -499,7 +625,7 @@ macros.display = {
             // The above line recreates params, with the quotes.
             try {
                 for(j=0; j < params.length; j++) {
-                    params[j] = eval(Wikifier.parse(params[j]));
+                    params[j] = internalEval(Wikifier.parse(params[j]));
                 }
             } catch (e) {
                 throwError(place, parser.fullMatch() + " bad argument: " + params[j], parser.fullMatch());
@@ -508,7 +634,7 @@ macros.display = {
         }
         else {
             try {
-                output = eval(name);
+                output = internalEval(name);
             }
             catch(e) {
             }
@@ -517,17 +643,12 @@ macros.display = {
                 if (tale.has(name)) {
                     output = name;
                 }
-                else {
-                    throwError(place, parser.fullMatch() + " bad expression: " + e.message,
-                        parser.fullMatch());
-                    return
-                }
             }
         }
         if (!output) {
-            throwError(place, '"' +name + "\" did not evaluate to a passage name", parser.fullMatch());
+            throwError(place, '<<' + macroName + '>>: "' +name + "\" did not evaluate to a passage name", parser.fullMatch());
         } else if (!tale.has(output+"")) {
-            throwError(place, "The \"" + output + "\" passage does not exist", parser.fullMatch());
+            throwError(place, '<<' + macroName + ">>: The \"" + output + "\" passage does not exist", parser.fullMatch());
         } else {
             oldDisplayParams = this.parameters;
             this.parameters = params;
@@ -573,14 +694,15 @@ version.extensions.printMacro = {
 };
 macros.print = {
     handler: function (place, macroName, params, parser) {
+        var args = parser.fullArgs(macroName != "print"), output;
         try {
-            var args = parser.fullArgs(macroName != "print"),
-                output = eval(args);
+            // See comment within macros.display
+            output = internalEval(args);
             if (output != null && (typeof output != "number" || !isNaN(output))) {
                 new Wikifier(place, ''+output);
             }
         } catch (e) {
-            throwError(place, "<<print>> bad expression: " + e.message, parser.fullMatch());
+            throwError(place, "<<print>> bad expression: " + params.join(' '), parser.fullMatch());
         }
     }
 };
@@ -591,13 +713,13 @@ version.extensions.setMacro = {
 };
 macros.set = {
     handler: function (a, b, c, parser) {
-        macros.set.run(a, parser.fullArgs(), parser)
+        macros.set.run(a, parser.fullArgs(), parser, c.join(' '))
     },
-    run: function (a,expression, parser) {
+    run: function (a,expression, parser, original) {
         try {
-            return eval(expression);
+            return internalEval(expression);
         } catch (e) {
-            throwError(a, "bad expression: " + e.message, parser ? parser.fullMatch() : expression)
+            throwError(a, "bad expression: " + (original || expression), parser ? parser.fullMatch() : expression)
         }
     }
 };
@@ -610,34 +732,30 @@ macros["if"] = {
     handler: function (place, macroName, params, parser) {
         var conditions = [],
             clauses = [],
+            rawConds = [],
             srcOffset = parser.source.indexOf(">>", parser.matchStart) + 2,
             src = parser.source.slice(srcOffset),
             endPos = -1,
+            rawCond = params.join(' '),
             currentCond = parser.fullArgs(),
             currentClause = "",
             t = 0,
-            nesting = 0;
-		
-        for (var i = 0; i < src.length; i++) {
-            if (src.substr(i, 9) == "<<endif>>") {
-                nesting--;
-                if (nesting < 0) {
-                    endPos = srcOffset + i + 9;
-                    conditions.push(currentCond.trim());
-                    clauses.push(currentClause);
-                    break;
-                }
-            }
+            nesting = 0,
+            i = 0;
+        
+        for (; i < src.length; i++) {
             if ((src.substr(i, 6) == "<<else") && !nesting) {
+                rawConds.push(rawCond);
                 conditions.push(currentCond.trim());
                 clauses.push(currentClause);
                 currentClause="";
                 t = src.indexOf(">>",i+6);
                 if(src.substr(i+6,4)==" if " || src.substr(i+6,3)=="if ") {
-                    currentCond = src.slice(i+9,t);
-                    currentCond = Wikifier.parse(currentCond);
+                    rawCond = src.slice(i+9,t);
+                    currentCond = Wikifier.parse(rawCond);
                 }
                 else {
+                    rawCond = "";
                     currentCond = "true";
                 }
                 i = t+2;
@@ -645,23 +763,34 @@ macros["if"] = {
             if (src.substr(i, 5) == "<<if ") {
                 nesting++;
             }
+            if (src.substr(i, 9) == "<<endif>>") {
+                nesting--;
+                if (nesting < 0) {
+                    endPos = srcOffset + i + 9;
+                    rawConds.push(rawCond);
+                    conditions.push(currentCond.trim());
+                    clauses.push(currentClause);
+                    break;
+                }
+            }
             currentClause += src.charAt(i);
         }
-        try {
-            if (endPos != -1) {
-                parser.nextMatch = endPos;
+
+        if (endPos != -1) {
+            parser.nextMatch = endPos;
+            try {
                 for(i=0;i<clauses.length;i++) {
-                    if (eval(conditions[i])) {
+                    if (internalEval(conditions[i])) {
                         new Wikifier(place, clauses[i]);
                         break;
                     }
                 }
-            } else {
-                throwError(place, "I can't find a matching <<endif>>", parser.fullMatch());
+            } catch (e) {
+                throwError(place, "<<" + (i ? "else " : "") + "if>> bad condition: " + rawConds[i], !i ? parser.fullMatch()
+                    : "<<else if " + rawConds[i] + ">>");
             }
-        } catch (e) {
-            throwError(place, "<<if>> bad condition: " + e.message, !i ? parser.fullMatch()
-                : "<<else if " + conditions[i] + ">>");
+        } else {
+            throwError(place, "I can't find a matching <<endif>>", parser.fullMatch());
         }
     }
 };
@@ -678,7 +807,7 @@ macros.remember = {
     handler: function (place, macroName, params, parser) {
         var variable, value, re, match,
             statement = params.join(" ");
-        macros.set.run(place, parser.fullArgs());
+        macros.set.run(place, parser.fullArgs(), null, params.join(' '));
         if (!window.localStorage) {
             throwError(place, "<<remember>> can't be used "
                 + (window.location.protocol == "file:" ? " by local HTML files " : "") + " in this browser.",parser.fullMatch());
@@ -691,7 +820,7 @@ macros.remember = {
             try {
                 value = JSON.stringify(value);
             } catch (e) {
-                throwError(place, "can't remember $" + variable + " (" + (typeof value) + ")", parser.fullMatch());
+                throwError(place, "can't <<remember>> the variable $" + variable + " (" + (typeof value) + ")", parser.fullMatch());
                 return;
             }
             window.localStorage[this.prefix + variable] = value;
@@ -699,11 +828,7 @@ macros.remember = {
     },
     init: function () {
         var i, variable, value;
-        if (tale.has("StoryTitle")) {
-            this.prefix = "Twine." + tale.title + ".";
-        } else {
-            this.prefix = "Twine.Untitled Story.";
-        }
+        this.prefix = "Twine." + tale.defaultTitle + ".";
         for (i in window.localStorage) {
             if (i.indexOf(this.prefix) == 0) {
                 variable = i.substr(this.prefix.length);
@@ -773,7 +898,7 @@ macros.nobr = macros.silently = {
             new Wikifier(macroName == "nobr" ? place : h, c);
             parser.nextMatch = d;
         } else {
-            throwError(place, "can't find matching end" + macroName, parser.fullMatch());
+            throwError(place, "can't find matching <<end" + macroName+">>", parser.fullMatch());
         }
     }
 };
@@ -844,7 +969,7 @@ macros.back = {
             stepsParam2 = e[stepsParam - 1];
             if(stepsParam2[0] == '$') {
                 try {
-                    stepsParam2 = eval(Wikifier.parse(stepsParam2));
+                    stepsParam2 = internalEval(Wikifier.parse(stepsParam2));
                 }
                 catch(r) {
                     throwError(a, parser.fullMatch() + " bad expression: " + r.message, parser.fullMatch())
@@ -864,11 +989,10 @@ macros.back = {
         labelParam = e.indexOf("label");
         if(labelParam > -1) {
             if(!e[labelParam + 1]) {
-                throwError(a, e[labelParam] + ' keyword needs an additional label parameter', parser.fullMatch());
+                throwError(a, parser.fullMatch() + ": " + e[labelParam] + ' keyword needs an additional label parameter', parser.fullMatch());
                 return;
             }
             labeltouse = e[labelParam + 1];
-            if(e[labelParam] == 'labeldefault') this.labeltext = labeltouse;
             e.splice(labelParam, 2);
         }
         // What's left is the passage name parameter
@@ -876,7 +1000,7 @@ macros.back = {
             if(e[0]) {
                 if(e[0].charAt(0) == '$') {
                     try {
-                        e = eval(Wikifier.parse(e[0]));
+                        e = internalEval(Wikifier.parse(e[0]));
                     }
                     catch(r) {
                         throwError(a, parser.fullMatch() + " bad expression: " + r.message, parser.fullMatch())
@@ -900,9 +1024,9 @@ macros.back = {
         }
         el = document.createElement("a");
         el.className = b;
-        el.onclick = (function(b) { return function () {
+        addClickHandler(el, (function(b) { return function () {
             return macros.back.onclick(b == "back", steps, el)
-        }}(b));
+        }}(b)));
         el.innerHTML = labeltouse;
         a.appendChild(el);
     }
@@ -1087,9 +1211,6 @@ Passage.prototype.processText = function() {
     }
     return ret;
 };
-Passage.prototype.toJSON = function() {
-    return this.id;
-};
 
 /*
 **
@@ -1106,8 +1227,9 @@ function Tale() {
                 return (this[a]+"") != "off";
             }
         },
+        HTMLtitle = document.querySelector('title');
         tiddlerTitle = '';
-    window.tale = this;
+    this.defaultTitle = (HTMLtitle && (HTMLtitle.textContent || HTMLtitle.innerText)) || "Untitled Story";
     this.passages = {};
     //Look for and load the StorySettings
     if (document.normalize) document.normalize();
@@ -1196,11 +1318,16 @@ Tale.prototype.lookup = function (h, g, a) {
 Tale.prototype.canUndo = function() {
     return this.storysettings.lookup('undo',true);
 };
-Tale.prototype.identity = function() {
-    return this.storysettings.identity || "game";
+Tale.prototype.identity = function () {
+    var meta = document.querySelector("meta[name='identity']"),
+        identity = meta ? meta.getAttribute("content") : "story";
+    
+    return (Tale.prototype.identity = function() {
+        return identity;
+    })();
 };
 Tale.prototype.forEachStylesheet = function(tags, callback) {
-    var passage, i
+    var passage, i;
     tags = tags || [];
     
     if (typeof callback != "function")
@@ -1218,11 +1345,11 @@ Tale.prototype.forEachStylesheet = function(tags, callback) {
     }
 };
 Tale.prototype.setPageElements = function() {
-    var storyTitle, defaultTitle = "Untitled Story";
+    var storyTitle;
     
-    setPageElement("storyTitle", "StoryTitle", defaultTitle);
+    setPageElement("storyTitle", "StoryTitle", this.defaultTitle);
     storyTitle = document.getElementById("storyTitle");
-    document.title = this.title = (storyTitle && (storyTitle.textContent || storyTitle.innerText)) || defaultTitle;
+    document.title = this.title = (storyTitle && (storyTitle.textContent || storyTitle.innerText)) || this.defaultTitle;
     
     setPageElement("storySubtitle", "StorySubtitle", "");
     if (tale.has("StoryAuthor")) {
@@ -1340,7 +1467,9 @@ Wikifier.prototype.subWikify = function (output, terminator) {
 };
 
 Wikifier.prototype.outputText = function (place, startPos, endPos) {
-    insertText(place, this.source.substring(startPos, endPos));
+    if (place) {
+        insertText(place, this.source.substring(startPos, endPos));
+    }
 };
 
 Wikifier.prototype.fullMatch = function() {
@@ -1362,7 +1491,8 @@ Wikifier.parse = function (input) {
         g = Wikifier.textPrimitives.unquoted;
     
     function alter(from,to) {
-        return b.replace(new RegExp(from+g,"gi"),to);
+        b = b.replace(new RegExp(from+g,"gim"),to);
+        return alter;
     }
     // Extract all the variables, and set them to 0 if undefined.
     re = new RegExp(Wikifier.textPrimitives.variable+g,"gi");
@@ -1373,20 +1503,20 @@ Wikifier.parse = function (input) {
             found.push(m[0]);
         }
     }
-    b = alter(Wikifier.textPrimitives.variable, "state.history[0].variables.$1");
+    alter(Wikifier.textPrimitives.variable, "state.history[0].variables.$1")
     // Old operators
-    b = alter("\\beq\\b", " == ");
-    b = alter("\\bneq\\b", " != ");
-    b = alter("\\bgt\\b", " > ");
-    b = alter("\\bgte\\b", " >= ");
-    b = alter("\\blt\\b", " < ");
-    b = alter("\\blte\\b", " <= ");
-    b = alter("\\band\\b", " && ");
-    b = alter("\\bor\\b", " || ");
-    b = alter("\\bnot\\b", " ! ");
+    ("\\beq\\b", " == ")
+    ("\\bneq\\b", " != ")
+    ("\\bgt\\b", " > ")
+    ("\\bgte\\b", " >= ")
+    ("\\blt\\b", " < ")
+    ("\\blte\\b", " <= ")
+    ("\\band\\b", " && ")
+    ("\\bor\\b", " || ")
+    ("\\bnot\\b", " ! ")
     // New operators
-    b = alter("\\bis\\b", " == ");
-    b = alter("\\bto\\b", " = ");
+    ("\\bis\\b", " == ")
+    ("\\bto\\b", " = ");
     return b
 };
 Wikifier.formatHelpers = {
@@ -1397,7 +1527,7 @@ Wikifier.formatHelpers = {
     inlineCssHelper: function (w) {
         var s, v, lookaheadMatch, gotMatch,
             styles = [],
-            lookahead = "(?:(" + Wikifier.textPrimitives.anyLetter + "+)\\(([^\\)\\|\\n]+)(?:\\):))|(?:(" + Wikifier.textPrimitives.anyLetter + "+):([^;\\|\\n]+);)",
+            lookahead = Wikifier.styleByCharFormatter.lookahead,
             lookaheadRegExp = new RegExp(lookahead, "mg"),
             hadStyle = false,
             unDash = function (str) {
@@ -1407,13 +1537,16 @@ Wikifier.formatHelpers = {
                 return s.join("");
             };
         
+        styles.className = "";
         do {
             lookaheadRegExp.lastIndex = w.nextMatch;
             lookaheadMatch = lookaheadRegExp.exec(w.source);
             gotMatch = lookaheadMatch && lookaheadMatch.index == w.nextMatch;
             if (gotMatch) {
                 hadStyle = true;
-                if (lookaheadMatch[1]) {
+                if (lookaheadMatch[5]) {
+                    styles.className += lookaheadMatch[5].replace(/\./g," ") + " ";
+                } else if (lookaheadMatch[1]) {
                     s = unDash(lookaheadMatch[1]);
                     v = lookaheadMatch[2];
                 } else {
@@ -1596,8 +1729,8 @@ Wikifier.formatters = [
 },
 {
     name: "list",
-    match: "^(?:(?:[>\\*=]+)|(?:#+))",
-    lookahead: "^(?:([>\\*=]+)|(#+))",
+    match: "^(?:(?:\\*+)|(?:#+))",
+    lookahead: "^(?:(\\*+)|(#+))",
     terminator: "\\n",
     handler: function (w) {
         var newType, newLevel, t, len, bulletType, lookaheadMatch, matched,
@@ -1613,17 +1746,8 @@ Wikifier.formatters = [
             matched = lookaheadMatch && lookaheadMatch.index == w.nextMatch;
             if (matched) {
                 newLevel = lookaheadMatch[0].length;
-                // Non-conventional bullet points
                 if (lookaheadMatch[1]) {
-                    if (lookaheadMatch[1].slice(-2) == "->") {
-                        bulletType = '\u2192';
-                        newLevel--;
-                    }
-                    else if (lookaheadMatch[1].slice(-2) == "=>") {
-                        bulletType = '\u21d2';
-                        newLevel--;
-                    }
-                    else bulletType = lookaheadMatch[1].slice(-1);
+                    bulletType = lookaheadMatch[1].slice(-1);
                     newType = "ul";
                 }
                 else if (lookaheadMatch[2]) {
@@ -1644,6 +1768,7 @@ Wikifier.formatters = [
                 currLevel = newLevel;
                 currType = newType;
                 t = insertElement(placeStack[placeStack.length - 1], "li");
+                // Currently unused
                 if (bulletType && bulletType != "*") {
                     t.setAttribute("data-bullet", bulletType);
                 }
@@ -1654,7 +1779,7 @@ Wikifier.formatters = [
 },
 (Wikifier.urlFormatter = {
     name: "urlLink",
-    match: "(?:http|https|mailto|javascript|ftp|data):[^\\s'\"]+(?:/|\\b)",
+    match: "(?:https?|mailto|javascript|ftp|data):[^\\s'\"]+(?:/|\\b)",
     handler: function (w) {
         var e = Wikifier.createExternalLink(w.output, w.matchText);
         w.outputText(e, w.matchStart, w.nextMatch);
@@ -1671,16 +1796,16 @@ Wikifier.formatters = [
             return Wikifier.createInternalLink(out, title, callback, type);
     },
     // This base callback executes the code in a setter 
-    makeCallback: function(out,code,callback) {
+    makeCallback: function(code,callback) {
         return function() {
-            macros.set.run(out, Wikifier.parse(code)); 
+            macros.set.run(null, Wikifier.parse(code), null, code); 
             typeof callback == "function" && callback.call(this);
         }
     },
     makeLink: function(out, match, callback2, type) {
         var link, title, callback;
         if (match[3]) { // Code
-            callback = this.makeCallback(out,match[3],callback2);
+            callback = this.makeCallback(match[3],callback2);
         }
         else {
             typeof callback2 == "function" && (callback = callback2);
@@ -1704,8 +1829,28 @@ Wikifier.formatters = [
     name: "image",
     match: "\\[(?:[<]{0,1})(?:[>]{0,1})[Ii][Mm][Gg]\\[",
     lookahead: "\\[([<]?)(>?)img\\[(?:([^\\|\\]]+)\\|)?([^\\[\\]\\|]+)\\](?:\\[([^\\]]*)\\]?)?(\\])",
+    importedImage: function(img, passageName) {
+        var imgPassages, imgname;
+        // Try to parse it as a variable
+        try {
+            imgname = internalEval(Wikifier.parse(passageName));
+        }
+        catch(e) {
+        }
+        if (!imgname) {
+            imgname = passageName;
+        }
+        // Base64 passage transclusion
+        imgPassages = tale.lookup("tags", "Twine.image");
+        for (j = 0; j < imgPassages.length; j++) {
+            if (imgPassages[j].title == imgname) {
+                img.src = imgPassages[j].text;
+                break;
+            }
+        }
+    },
     handler: function (w) {
-        var e, imgPassages, imgname, img, j, lookaheadMatch,
+        var e, img, j, lookaheadMatch,
             lookaheadRegExp = new RegExp(this.lookahead, "mig");
         lookaheadRegExp.lastIndex = w.matchStart;
         lookaheadMatch = lookaheadRegExp.exec(w.source);
@@ -1719,23 +1864,8 @@ Wikifier.formatters = [
             if (lookaheadMatch[1]) img.align = "left";
             else if (lookaheadMatch[2]) img.align = "right";
             if (lookaheadMatch[3]) img.title = lookaheadMatch[3];
-            // Try to parse it as a variable
-            try {
-                imgname = eval(Wikifier.parse(lookaheadMatch[4]));
-            }
-            catch(e) {
-            }
-            if (!imgname) {
-                imgname = lookaheadMatch[4];
-            }
-            // Base64 passage transclusion
-            imgPassages = tale.lookup("tags", "Twine.image");
-            for (j = 0; j < imgPassages.length; j++) {
-                if (imgPassages[j].title == imgname) {
-                    img.src = imgPassages[j].text;
-                    break;
-                }
-            }
+            // Setup the image if it's referencing an image passage.
+            this.importedImage(img,lookaheadMatch[4]);
             w.nextMatch = lookaheadMatch.index + lookaheadMatch[0].length;
         }
     }
@@ -1743,11 +1873,9 @@ Wikifier.formatters = [
 {
     name: "macro",
     match: "<<",
-    lookahead: "<<([^>\\s]+)(?:\\s*)((?:[^>]|>"
-        + Wikifier.textPrimitives.unquoted.replace("?=","?!")
-        + ")*)>>",
+    lookahead: /<<([^>\s]+)(?:\s*)((?:\\.|'(?:[^'\\]*\\.)*[^'\\]*'|"(?:[^"\\]*\\.)*[^"\\]*"|[^'"\\>]|>(?!>))*)>>/mg,
     handler: function (w) {
-        var lookaheadRegExp = new RegExp(this.lookahead, "mg");
+        var lookaheadRegExp = new RegExp(this.lookahead);
         lookaheadRegExp.lastIndex = w.matchStart;
         var lookaheadMatch = lookaheadRegExp.exec(w.source.replace(/\u200c/g,'\n'));
         if (lookaheadMatch && lookaheadMatch.index == w.matchStart && lookaheadMatch[1]) {
@@ -1756,7 +1884,7 @@ Wikifier.formatters = [
             var name = lookaheadMatch[1];
             try {
                 var macro = macros[name];
-                if (macro && macro.handler) {
+                if (macro && typeof macro == "object" && macro.handler) {
                     macro.handler(w.output, name, params, w);
                 }
                 // Variable?
@@ -1767,7 +1895,7 @@ Wikifier.formatters = [
                 else if (tale.has(name)) {
                     macros.display.handler(w.output, name, [name].concat(params), w);
                 }
-                else throwError(w.output, 'Macro not found: ' + name, w.fullMatch());
+                else throwError(w.output, 'No macro or passage called "' + name + '"', w.fullMatch());
             } catch (e) {
                 throwError(w.output, 'Error executing macro ' + name + ': ' + e.toString(), w.fullMatch());
             }
@@ -1856,21 +1984,28 @@ Wikifier.formatters = [
         }
     }
 },
-{
+(Wikifier.styleByCharFormatter = {
     name: "styleByChar",
     match: "@@",
     terminator: "@@",
-    lookahead: "(?:([^\\(@]+)\\(([^\\)]+)(?:\\):))|(?:([^:@]+):([^;]+);)",
+    lookahead: "(?:([^\\(@]+)\\(([^\\)\\|\\n]+)(?:\\):))|(?:([^\\.:@]+):([^;\\|\\n]+);)|(?:\\.([^;\\|\\n]+);)",
     handler: function (w) {
         var e = insertElement(w.output, "span", null, null, null);
         var styles = Wikifier.formatHelpers.inlineCssHelper(w);
-        if (styles.length == 0)
+        if (styles.length == 0) {
             e.className = "marked";
-        else for (var t = 0; t < styles.length; t++)
-            e.style[styles[t].style] = styles[t].value;
+        }
+        else {
+            for (var t = 0; t < styles.length; t++) {
+                e.style[styles[t].style] = styles[t].value;
+            }
+            if (typeof styles.className == "string") {
+                e.className = styles.className; 
+            }
+        }
         w.subWikify(e, this.terminator);
     }
-},
+}),
 {
     name: "lineBreak",
     match: "\\n",
@@ -1886,8 +2021,18 @@ Wikifier.formatters = [
     }
 },
 {
+    name: "htmlCharacterReference",
+    match: "(?:(?:&#?[a-zA-Z0-9]{2,8};|.)(?:&#?(?:x0*(?:3[0-6][0-9a-fA-F]|1D[c-fC-F][0-9a-fA-F]|20[d-fD-F][0-9a-fA-F]|FE2[0-9a-fA-F])|0*(?:76[89]|7[7-9][0-9]|8[0-7][0-9]|761[6-9]|76[2-7][0-9]|84[0-3][0-9]|844[0-7]|6505[6-9]|6506[0-9]|6507[0-1]));)+|&#?[a-zA-Z0-9]{2,8};)",
+    handler: function(w)
+    {
+        var el = document.createElement("div");
+        el.innerHTML = w.matchText;
+        insertText(w.output, el.textContent);
+    }
+},
+{
     name: "htmltag",
-    match: "<\\w+(?:(?:\\s+\\w+(?:\\s*=\\s*(?:\".*?\"|'.*?'|[^'\">\\s]+))?)+\\s*|\\s*)\\/?>",
+    match: "<(?:\\/?[\\w\\-]+|[\\w\\-]+(?:(?:\\s+[\\w\\-]+(?:\\s*=\\s*(?:\\\".*?\\\"|'.*?'|[^'\\\">\\s]+))?)+\\s*|\\s*)\\/?)>",
     tagname: "<(\\w+)",
     voids: ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"],
     tableElems: ["table","thead","tbody","tfoot","th","tr","td","colgroup","col","caption","figcaption"],
@@ -1907,7 +2052,7 @@ Wikifier.formatters = [
         }
     },
     handler: function (a) {
-        var tmp, e, isvoid, isstyle, lookaheadRegExp, lookaheadMatch, lookahead,
+        var tmp, passage, setter, e, isvoid, isstyle, lookaheadRegExp, lookaheadMatch, lookahead,
           re = new RegExp(this.tagname).exec(a.matchText),
           tn = re && re[1] && re[1].toLowerCase();
         if(tn && tn != "html") {
@@ -1939,6 +2084,22 @@ Wikifier.formatters = [
                 if (e.tagName.toLowerCase() == 'table') {
                     this.cleanupTables.call(this,e);
                 }
+                // Special data-setter attribute
+                if (setter = e.getAttribute("data-setter")) {
+                    setter = Wikifier.linkFormatter.makeCallback(setter);
+                }
+                // Special data-passage attribute
+                if (passage = e.getAttribute("data-passage")) {
+                    if (tn != "img") { 
+                        addClickHandler(e, Wikifier.linkFunction(Wikifier.parsePassageTitle(passage), e, setter));
+                        if (tn == "area" || tn == "a") {
+                            e.setAttribute("href", "javascript:;");
+                        }
+                    }
+                    else {
+                        Wikifier.imageFormatter.importedImage(e, passage);
+                    }
+                }
                 a.output.appendChild(e);
             } else {
                 throwError(a.output,"HTML tag '"+tn+"' wasn't closed.", a.matchText);
@@ -1960,7 +2121,7 @@ Wikifier.charSpanFormatter = {
 Wikifier.parsePassageTitle = function(title) {
     if (title && !tale.has(title)) {
         try {
-            title = (eval(this.parse(title)) || title)+"";
+            title = (internalEval(this.parse(title)) || title)+"";
         }
         catch(e) {}
     }
@@ -1975,7 +2136,12 @@ Wikifier.linkFunction = function(title, el, callback) {
                 state.rewindTo(passage, true);
             }
         }
-        state.display(title, el, null, callback);
+        if (title) {
+            state.display(title, el, null, callback);
+        }
+        else if (typeof callback == "function") {
+            callback();
+        }
     };
 };
 
@@ -1990,7 +2156,7 @@ Wikifier.createInternalLink = function (place, title, callback, type) {
     }
     else el.className = 'broken'+suffix;
 
-    el.onclick = Wikifier.linkFunction(title, el, callback);
+    addClickHandler(el, Wikifier.linkFunction(title, el, callback));
 
     if (place) place.appendChild(el);
 
@@ -2003,7 +2169,9 @@ Wikifier.createExternalLink = function (place, url, callback, type) {
     el.href = url;
     el.className = "external"+(type == "button" ? "Button" : "Link");
     el.target = "_blank";
-    if (typeof callback == "function") el.onclick = callback;
+    if (typeof callback == "function") {
+        addClickHandler(el,callback);
+    }
     
     if (place) place.appendChild(el);
 
@@ -2031,22 +2199,28 @@ function visited(e) {
     return ret;
 }
 
+// Returns the number of times the player visited passages containing ALL
+// provided tags.
+// The tags can be several strings, or a single string with space-delimited tags.
 function visitedTag() {
-    var i, j, k, ret = 0;
+    var i, j, sh, ret = 0, tags = Array.prototype.slice.call(arguments);
+    if (tags.length == 1 && typeof tags[0] == "string") {
+        tags = tags.split(" ");
+    }
     if (!state) {
         return 0;
     }
-    for(i = 0; i<state.history.length && state.history[i].passage; i++) {
-        for(j = 0; j<state.history.length && state.history[i].passage; i++) {
-            for (k = 0; k < arguments.length || void ret++; k++) {
-                if(state.history[i].passage.tags.indexOf(arguments[k])==-1) {
-                    break;
-                }
+    sh = state.history;
+    for(i = 0; i<sh.length && sh[i].passage; i++) {
+        for (j = 0; j < tags.length || void ret++; j++) {
+            if(sh[i].passage.tags.indexOf(tags[j])==-1) {
+                break;
             }
         }
     }
     return ret;
 }
+var visitedTags = visitedTag;
 
 function turns() {
     return state.history.length-1;
@@ -2082,8 +2256,24 @@ function previous() {
     return ""
 }
 
+// A random integer function
+// 1 argument: random int from 0 to a inclusive
+// 2 arguments: random int from a to b inclusive (order irrelevant)
+function random(a, b) {
+    var from, to;
+    if (!b) {
+        from = 0;
+        to = a;
+    } else {
+        from = Math.min(a, b);
+        to = Math.max(a, b);
+    }
+    to += 1;
+    return ~~((Math.random() * (to - from))) + from;
+}
+
 function either() {
-    if (arguments[0] instanceof Array && arguments.length == 1) {
+    if (Array.isArray(arguments[0]) && arguments.length == 1) {
         return either.apply(this,arguments[0]);
     }
     return arguments[~~(Math.random()*arguments.length)];
@@ -2101,6 +2291,13 @@ function bookmark() {
     return state.hash || "#";
 }
 
+/* Used to eval within Twine, but outside the context of a particular function */
+function internalEval(s) {
+    // eval("{x:1,y:1}") fails miserably unless the obj. literal
+    // is not the first expression in the line (hence, "0,").
+    return eval("0,"+s);
+}
+/* Used to execute script passages */
 function scriptEval(s) {
     try {
         eval(s.text);
@@ -2115,11 +2312,17 @@ window.onbeforeunload = function() {
     }
 };
 /* Error reporting */
-var softErrorMessage = " You may be able to continue playing, but some parts may not work properly.";
+var oldOnError = window.onerror || null, 
+softErrorMessage = "You may be able to continue playing, but some parts may not work properly.";
+
 window.onerror = function (msg, a, b, c, error) {
     var s = (error && (".\n\n" + error.stack.replace(/\([^\)]+\)/g,'') + "\n\n")) || (" (" + msg + ").\n");
     alert("Sorry to interrupt, but this " + ((tale && tale.identity && tale.identity()) || "page") + "'s code has got itself in a mess" + s + softErrorMessage.slice(1));
-    window.onerror = null;
+    // Restore previous onerror
+    window.onerror = oldOnError;
+    if (typeof window.onerror == "function") {
+        window.onerror(msg, a, b, c, error);
+    }
 };
 
 /* Init function */
@@ -2127,28 +2330,53 @@ var $;
 function main() {
     // Used by old custom scripts.
     // Cedes to jQuery if it exists.
+    // Since jQuery is inserted after this script element,
+    // wait until main() is called before doing this.
     $ = window.$ || function(a) {
         return (typeof a == "string" ? document.getElementById(a) : a);
     }
-    var imgs, scripts, macro, style, styleText = "", i, passages = document.getElementById("passages");
+    var imgs, scripts, macro, style, i,
+        styleText = "",
+        passages = document.getElementById("passages");
     
+    // Run checks after custom macros are installed
     function sanityCheck(thing) {
-        // Warn if display() was replaced improperly
-        if (!sanityCheck.display) {
-            if (History.prototype.display.length < 4 && !~History.prototype.display.toString().indexOf("arguments")) {
-                alert("NOTE: The " + thing + " contains a function that patches History.prototype.display, but takes the wrong number of arguments."+softErrorMessage);
+        var i, j, s = "NOTE: The " + thing,
+            checks = { prerender: prerender, postrender: postrender, macros: macros };
+        // Warn if prerender/postrender/macros aren't objects, and
+        // prerender/postrender's own properties aren't functions.
+        for (i in checks) {
+            if (Object.prototype.hasOwnProperty.call(checks, i) && !sanityCheck[i]) {
+                if (!checks[i] || typeof checks[i]  != "object") {
+                    alert(s + " seems to have corrupted the " + i + " object."+softErrorMessage);
+                    sanityCheck[i] = true;
+                    continue;
+                }
+                if (i != "macros") {
+                    for (j in checks[i]) {
+                        if (Object.prototype.hasOwnProperty.call(checks[i], j)
+                                && typeof checks[i][j] != "function") {
+                            alert(s + " added a property '" + j + "' to " + i + ", "
+                                +"which is a "+typeof checks[i][j]+", not a function."+softErrorMessage);
+                            sanityCheck[i] = true;
+                            break;
+                        }
+                    }
+                }
             }
-            sanityCheck.display = true;
         }
     }
     
+    // Check for basic compatibility
     if (!window.JSON || !document.querySelector) {
         return (passages.innerHTML = "This " + tale.identity() + " requires a newer web browser. Sorry.");
     } else {
         passages.innerHTML = "";
     }
+    // Initialise Tale
     tale = window.tale = new Tale();
     
+    // Check for IE8 image compatibility
     if (~document.documentElement.className.indexOf("lt-ie9")) {
         imgs = tale.lookup("tags", "Twine.image");
         for (i = 0; i < imgs.length; i++) {
@@ -2158,6 +2386,7 @@ function main() {
             }
         }
     }
+    // Run all script passages
     scripts = tale.lookup("tags", "script");
     for (i = 0; i < scripts.length; i++) {
         scriptEval(scripts[i]);
@@ -2172,15 +2401,18 @@ function main() {
             sanityCheck('init() of the custom macro "'+i+'"');
         }
     }
-
+    // Run all stylesheet passages
     style = document.getElementById("storyCSS");
     for (i in tale.passages) {
         i = tale.passages[i];
+        if (i.tags.indexOf("stylesheet")==-1) {
+            continue;
+        }
+        // No other tags?
         if (i.tags + "" == "stylesheet") {
             styleText += i.text;
         }
-        else if (i.tags.length == 2 && i.tags.indexOf("transition") >-1 &&
-                i.tags.indexOf("stylesheet") >-1) {
+        else if (i.tags.length == 2 && i.tags.indexOf("transition") >-1) {
             setTransitionCSS(i.text);
         }
     }
@@ -2189,3 +2421,22 @@ function main() {
     
     state.init();
 }
+
+setTimeout(function f() {
+    var size, bar = document.getElementById("loadingbar"), store = document.getElementById("storeArea");
+    if (!bar) {
+        return;
+    }
+    if (store) {
+        size = store.getAttribute("data-size");
+        if (store.children.length <= size && !tale) {
+            // +1 so that the bar can reach the end
+            bar.style.width = ~~((store.children.length+1)/size*100)+"%";
+        }
+        else {
+            bar.outerHTML = "";
+            return;
+        }
+    }
+    setTimeout(f,5);
+},5);
